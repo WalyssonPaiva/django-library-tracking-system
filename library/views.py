@@ -1,18 +1,24 @@
-from rest_framework import viewsets, status
+from rest_framework import viewsets, status, pagination
 from rest_framework.response import Response
 from .models import Author, Book, Member, Loan
+from django.db.models import Count, Q
 from .serializers import AuthorSerializer, BookSerializer, MemberSerializer, LoanSerializer
 from rest_framework.decorators import action
 from django.utils import timezone
 from .tasks import send_loan_notification
-
+from datetime import timedelta
+from django.conf import settings
 class AuthorViewSet(viewsets.ModelViewSet):
     queryset = Author.objects.all()
     serializer_class = AuthorSerializer
 
+class BookPagination(pagination.PageNumberPagination):
+    page_size = settings.ITEMS_PER_PAGE
+
 class BookViewSet(viewsets.ModelViewSet):
     queryset = Book.objects.all()
     serializer_class = BookSerializer
+    pagination_class = BookPagination
 
     @action(detail=True, methods=['post'])
     def loan(self, request, pk=None):
@@ -49,6 +55,26 @@ class MemberViewSet(viewsets.ModelViewSet):
     queryset = Member.objects.all()
     serializer_class = MemberSerializer
 
+    @action(detail=True, methods=["get"])
+    def top_active(self, request, pk=None):
+        members = Member.objects.annotate(active_loans=Count('loans', filter=Q(loans__is_returned=False))).filter(active_loans__gt=0).order_by('-active_loans')[:5]
+        if not members:
+            Response({})
 class LoanViewSet(viewsets.ModelViewSet):
     queryset = Loan.objects.all()
     serializer_class = LoanSerializer
+
+    @action(detail=True, methods=["POST"])
+    def extend_due_date(self, request, pk):
+        loan = self.get_object()
+        if not loan.is_overdue():
+            additional_days = request.json().get("additional_days ", 0)
+            if additional_days > 0:
+                loan.due_date =  loan.due_date + timedelta(days=additional_days)
+                loan.save()
+
+                return Response(loan, status=status.HTTP_200_OK)
+        return Response("Something went wrong", status=status.HTTP_400_BAD_REQUEST)
+
+
+        
